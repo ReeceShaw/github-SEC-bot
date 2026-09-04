@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""GitHub 特定主题热门项目 + AI 中文摘要 → 微信推送（含运行日志）"""
+"""
+GitHub 热门项目推送机器人
+每天 8:00 / 18:00 自动获取 AI、红队、渗透测试领域最新热门项目
+通过 PushPlus 推送到微信（含 AI 中文摘要 + 运行日志）
+"""
 
 import os
 import time
@@ -10,13 +14,13 @@ from html import escape
 # ========== 配置 ==========
 PUSHPLUS_TOKEN = os.environ.get("PUSHPLUS_TOKEN", "")
 PUSHPLUS_URL = "https://www.pushplus.plus/send"
-GITHUB_TOKEN = os.environ.get("GH_TOKEN", "")
+GITHUB_TOKEN = os.environ.get("GH_TOKEN", "")  # 注意：用 GH_TOKEN，不是 GITHUB_TOKEN
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# 自定义主题
+# 搜索主题配置
 TOPICS = [
     {
         "name": "🔓 渗透测试",
@@ -32,9 +36,9 @@ TOPICS = [
     },
 ]
 
-MAX_PER_TOPIC = 5
-LOOKBACK_DAYS = 7
-
+MAX_PER_TOPIC = 5        # 每个主题最多推送项目数
+LOOKBACK_DAYS = 7        # 搜索最近 N 天的项目
+API_DELAY = 3            # 每次 API 请求间隔（秒），防止触发限速
 
 # ========== GitHub 搜索 ==========
 
@@ -171,10 +175,10 @@ def format_projects(projects):
 
 def build_message(results, stats, total_time):
     """组装完整推送内容（含运行摘要）"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # --- 头部 ---
-    html = f"<h2>📡 GitHub 安全 & AI 项目周报</h2>"
+    html = f"<h2>📡 GitHub 安全 & AI 项目日报</h2>"
     html += f"<p>📅 {today} &nbsp;|&nbsp; 搜索窗口: 最近 {LOOKBACK_DAYS} 天</p>"
 
     # --- 运行摘要卡片 ---
@@ -212,18 +216,28 @@ def build_message(results, stats, total_time):
 
 def send_to_wechat(title, content):
     """通过 PushPlus 推送到微信"""
+    if not PUSHPLUS_TOKEN:
+        print("❌ PushPlus Token 未配置，跳过推送")
+        return False
+
     data = {
         "token": PUSHPLUS_TOKEN,
         "title": title,
         "content": content,
         "template": "html",
     }
-    resp = requests.post(PUSHPLUS_URL, json=data, timeout=30)
-    result = resp.json()
-    if result.get("code") == 200:
-        print(f"✅ 推送成功！流水号：{result.get('data')}")
-    else:
-        print(f"❌ 推送失败：{result}")
+    try:
+        resp = requests.post(PUSHPLUS_URL, json=data, timeout=30)
+        result = resp.json()
+        if result.get("code") == 200:
+            print(f"✅ 推送成功！流水号：{result.get('data')}")
+            return True
+        else:
+            print(f"❌ 推送失败：{result}")
+            return False
+    except Exception as e:
+        print(f"❌ 推送异常：{e}")
+        return False
 
 
 # ========== 主流程 ==========
@@ -232,9 +246,10 @@ if __name__ == "__main__":
     overall_start = time.time()
 
     print("=" * 50)
-    print("开始搜索 GitHub 特定主题项目...")
+    print("🚀 GitHub 热门项目推送任务启动")
     print(f"时间窗口: 最近 {LOOKBACK_DAYS} 天")
     print(f"AI 摘要: {'已启用 (' + DEEPSEEK_MODEL + ')' if DEEPSEEK_API_KEY else '未配置，跳过'}")
+    print(f"推送目标: {'PushPlus 微信' if PUSHPLUS_TOKEN else '未配置'}")
     print("=" * 50)
 
     results = []
@@ -257,12 +272,12 @@ if __name__ == "__main__":
         projects_html = format_projects(projects)
         results.append((topic["name"], projects_html))
 
-        time.sleep(3)  # API 限速保护
+        time.sleep(API_DELAY)  # API 限速保护
 
     total_time = time.time() - overall_start
 
     # 构建并推送消息
-    title = f"安全&AI项目周报 ({datetime.now().strftime('%Y-%m-%d')})"
+    title = f"安全&AI项目日报 ({datetime.now().strftime('%m-%d %H:%M')})"
     content = build_message(results, stats, total_time)
 
     send_to_wechat(title, content)
