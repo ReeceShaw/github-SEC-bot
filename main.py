@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub 特定主题热门项目 + AI 中文摘要 → 微信推送"""
+"""GitHub 特定主题热门项目 + AI 中文摘要 → 微信推送（含运行日志）"""
 
 import os
 import time
@@ -13,33 +13,22 @@ PUSHPLUS_URL = "https://www.pushplus.plus/send"
 GITHUB_TOKEN = os.environ.get("GH_TOKEN", "")
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
-# DeepSeek API 配置
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 
-# 自定义主题：名称 + 搜索关键词
+# 自定义主题
 TOPICS = [
     {
         "name": "🔓 渗透测试",
-        "query": "penetration-testing OR pentest OR "
-                 "exploit OR vulnerability OR "
-                 "web-security OR CTF OR "
-                 "payload OR reverse-shell OR "
-                 "privilege-escalation",
+        "query": "pentest OR exploit OR vulnerability",
     },
     {
         "name": "🔴 红队工具",
-        "query": "red-team OR redteaming OR "
-                 "c2-framework OR command-and-control OR "
-                 "beacon OR adversary-simulation OR "
-                 "initial-access OR lateral-movement",
+        "query": "redteam OR c2 OR lateral-movement",
     },
     {
         "name": "🤖 AI / 人工智能",
-        "query": "LLM OR large-language-model OR "
-                 "GPT OR transformer OR "
-                 "AI-agent OR RAG OR "
-                 "fine-tuning OR diffusion-model",
+        "query": "LLM OR transformer OR RAG",
     },
 ]
 
@@ -110,7 +99,10 @@ def generate_summary(project):
             json={
                 "model": DEEPSEEK_MODEL,
                 "messages": [
-                    {"role": "system", "content": "你是安全与AI领域的技术分析师，擅长用一句话精准概括开源项目价值。"},
+                    {
+                        "role": "system",
+                        "content": "你是安全与AI领域的技术分析师，擅长用一句话精准概括开源项目价值。",
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.3,
@@ -145,7 +137,6 @@ def format_projects(projects):
         forks = p.get("forks_count", 0)
         created = p.get("created_at", "")[:10]
 
-        # 生成 AI 中文摘要
         print(f"   🤖 正在为 {name} 生成 AI 摘要...")
         ai_summary = generate_summary(p)
         summary_html = ""
@@ -155,7 +146,6 @@ def format_projects(projects):
                 f'💡 AI 解读：{escape(ai_summary)}</p>'
             )
 
-        # 标签
         topics = p.get("topics", [])
         tags_html = ""
         if topics:
@@ -179,18 +169,42 @@ def format_projects(projects):
     return html
 
 
-def build_message(results):
-    """组装完整推送内容"""
+def build_message(results, stats, total_time):
+    """组装完整推送内容（含运行摘要）"""
     today = datetime.now().strftime("%Y-%m-%d")
-    html = f"<h2>📡 GitHub 安全 & AI 项目周报</h2>"
-    html += f"<p>📅 {today} &nbsp;|&nbsp; 搜索窗口: 最近 {LOOKBACK_DAYS} 天</p><hr/>"
 
+    # --- 头部 ---
+    html = f"<h2>📡 GitHub 安全 & AI 项目周报</h2>"
+    html += f"<p>📅 {today} &nbsp;|&nbsp; 搜索窗口: 最近 {LOOKBACK_DAYS} 天</p>"
+
+    # --- 运行摘要卡片 ---
+    html += '<div style="background:#f6f8fa;padding:12px 16px;border-radius:8px;margin:12px 0;">'
+    html += "<h3 style='margin-top:0;'>📊 本次运行摘要</h3>"
+    for s in stats:
+        emoji = "✅" if s["found"] > 0 else "⚠️"
+        html += (
+            f"<p style='margin:4px 0;'>{emoji} {s['name']}："
+            f"找到 <b>{s['found']}</b> 个项目"
+        )
+        if s["duration"] > 0:
+            html += f" | ⏱️ {s['duration']}s"
+        html += "</p>"
+
+    ai_status = "✅ 已生成" if DEEPSEEK_API_KEY else "❌ 未启用"
+    html += f"<p style='margin:4px 0;'>🤖 AI 摘要：{ai_status}</p>"
+    html += f"<p style='margin:4px 0;'>⏱️ 总耗时：<b>{total_time:.1f}s</b></p>"
+    html += "</div>"
+
+    html += "<hr/>"
+
+    # --- 各项目详情 ---
     for topic_name, projects_html in results:
         html += f"<h2>{topic_name}</h2>"
         html += projects_html
 
     ai_note = "（含 AI 中文摘要）" if DEEPSEEK_API_KEY else ""
     html += f"<p><em>由 GitHub Actions 自动推送{ai_note} · 数据来自 GitHub Search API</em></p>"
+
     return html
 
 
@@ -215,6 +229,8 @@ def send_to_wechat(title, content):
 # ========== 主流程 ==========
 
 if __name__ == "__main__":
+    overall_start = time.time()
+
     print("=" * 50)
     print("开始搜索 GitHub 特定主题项目...")
     print(f"时间窗口: 最近 {LOOKBACK_DAYS} 天")
@@ -222,18 +238,34 @@ if __name__ == "__main__":
     print("=" * 50)
 
     results = []
+    stats = []
+
     for topic in TOPICS:
+        topic_start = time.time()
         print(f"\n🔍 搜索: {topic['name']}")
         projects = search_github(topic["query"], per_page=MAX_PER_TOPIC)
         print(f"   找到 {len(projects)} 个项目")
+
+        duration = round(time.time() - topic_start, 1)
+
+        stats.append({
+            "name": topic["name"],
+            "found": len(projects),
+            "duration": duration,
+        })
+
         projects_html = format_projects(projects)
         results.append((topic["name"], projects_html))
 
-        # GitHub API 限速保护
-        time.sleep(6)
+        time.sleep(3)  # API 限速保护
 
+    total_time = time.time() - overall_start
+
+    # 构建并推送消息
     title = f"安全&AI项目周报 ({datetime.now().strftime('%Y-%m-%d')})"
-    content = build_message(results)
+    content = build_message(results, stats, total_time)
 
     send_to_wechat(title, content)
-    print("\n🎉 全部完成！")
+
+    print(f"\n⏱️ 总耗时: {total_time:.1f}s")
+    print("🎉 全部完成！")
